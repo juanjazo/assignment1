@@ -1,0 +1,300 @@
+---
+title: "JazoJuan_CEE218X_Assignment1"
+author: "Juan Jazo"
+date: "10/19/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## CEE 218X - Assignment 1 
+### Part 1 - Monthly Energy Use in the Bay Area 
+
+The following code uses energy use data from PG&E for 2017-2020. The end result is a plot of Bay Area energy usage for this time frame. 
+
+```{r, results='hide', message = FALSE}
+#load in the tidyverse package 
+library(tidyverse)
+
+#set our working directory to the file path where the PGE data is stored. 
+setwd("/Users/juanjazo/Documents/GitHub/juanjazo.github.io")
+
+#initialize the variables we will use in the loop that loads in data. We are loading the gas data with the following loop.
+years <- 2017:2020
+quarters <- 1:4
+type <- c("Gas")
+
+#initialize the gas data frame 
+pge_all_gas <- NULL
+
+#create a loop here that will load in the data from 2017-2020. 
+for(year in years) {
+  for(quarter in quarters) {
+        
+     if (year == 2020 && quarter == 4){
+      break
+    }
+      filename <- 
+         paste0(
+           "PGE_",
+            year,
+           "_Q",
+            quarter,
+           "_",
+            type,
+           "UsageByZip.csv"
+           )
+       temp <- read_csv(filename)
+  
+       pge_all_gas <- rbind(pge_all_gas,temp)
+   }
+}
+
+#convert to KBTU 
+pge_all_gas = pge_all_gas %>% mutate(TOTALKBTU = TOTALTHM*99.9761) %>% mutate(AVERAGEKBTU = AVERAGETHM*99.9761) 
+
+pge_all_gas =pge_all_gas[-c(7,8)]
+
+
+# now we do the same thing for the electric data and combine PGE data for 2017-2020
+
+#initialize the variables we will use in this loop. 
+type <- c("Electric")
+pge_all_elec <- NULL
+
+for(year in years) {
+  for(quarter in quarters) {
+     if (year == 2020 && quarter == 4){
+      break
+    }
+      filename <- 
+         paste0(
+           "PGE_",
+            year,
+           "_Q",
+            quarter,
+           "_",
+            type,
+           "UsageByZip.csv"
+           )
+       temp <- read_csv(filename)
+  
+       pge_all_elec <- rbind(pge_all_elec,temp)
+   }
+}
+
+#convert to KBTU 
+pge_all_elec = pge_all_elec %>% mutate(TOTALKBTU = TOTALKWH*3.412) %>% mutate(AVERAGEKBTU = AVERAGEKWH*3.412)
+
+pge_all_elec =pge_all_elec[-c(7,8)]
+
+# Combine the gas and electricity data into a single dataframe. 
+pge_all = rbind(pge_all_gas,pge_all_elec)
+
+#Filter four the four data types that we want. 
+pge_all_filter <- filter(pge_all,CUSTOMERCLASS %in% c( "Elec- Residential", "Elec- Commercial", "Gas- Residential", "Gas- Commercial" ))
+
+
+```
+
+Now that we have our data in, we can begin to combine the energy use data with spatial data to filter out any non Bay Area locations. 
+
+```{r}
+
+# we need to filter out any non bay area zip codes. 
+library(sf)
+library(tigris)
+library(leaflet)
+library(tidyr)
+#load in california counties 
+ca_counties <- counties("CA", cb = T, progress_bar = F)
+
+projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
+
+ca_counties_transformed <- 
+  ca_counties %>% 
+  st_transform(4326) %>% 
+  st_transform(26910) %>% 
+  st_transform(projection) %>% 
+  st_transform(st_crs(ca_counties))
+
+#instantiate bay area county names 
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+#apply a filter to our california counties so that they only contain bay area county names
+bay_counties <-counties("CA", cb = T, progress_bar = F) %>%filter(NAME %in% bay_county_names)
+
+#load in the US zip code data 
+usa_zips <- zctas(cb = T, progress_bar = F)
+
+#filter out non bay area zip codes 
+bay_zips <- usa_zips %>% st_centroid() %>% .[bay_counties, ] %>% st_set_geometry(NULL) %>% left_join(usa_zips %>% select(GEOID10)) %>% st_as_sf()
+
+#use the bay area zip codes to filter down the PGE data so that only PGE info for the bay area remains. 
+pge_bay_zips <- pge_all_filter %>% filter( pge_all_filter$ZIPCODE %in% bay_zips$ZCTA5CE10)
+
+#groups together the data frame by year, month, and customer class 
+pge_bay_grouped <- group_by(pge_bay_zips,YEAR,MONTH,CUSTOMERCLASS)
+
+#adds in the TOTALKBTU column which aggregates the energy use for each customer class between 2017 and Q3 2020 
+pge_bay_groups_summarized <- summarize(pge_bay_grouped,TOTALKBTU = sum(TOTALKBTU, na.rm = T))
+
+# adds in a column that has the actual month name rather than the just the number 
+month_names <- month.name[pge_bay_groups_summarized$MONTH]
+pge_bay_groups_summarized$MONTH_NAMES <- month_names
+
+#formats the year column as an integer. 
+pge_bay_groups_summarized$YEAR <- as.integer(pge_bay_groups_summarized$YEAR)
+
+#creates a new column which holds that date (month and year) for each row 
+pge_bay_groups_summarized$DATE <- 
+  as.Date(paste(pge_bay_groups_summarized$MONTH_NAMES, 1, pge_bay_groups_summarized$YEAR), "%B %d %Y")
+
+```
+
+Now we have our data filtered ans summarized, and we are ready to make our plot. 
+
+```{r}
+# load in the necessary packages 
+library(tidyverse)
+library(plotly)
+
+# plots the data in a bar chart that shows energy use split by end sector 
+pge_chart <-
+  pge_bay_groups_summarized %>% 
+  ggplot() +geom_bar(aes(x = DATE %>%  factor(), y = TOTALKBTU,fill = CUSTOMERCLASS),stat = "identity",
+  position = "stack" ) + labs(x = "Month",y = "BTU",title = "PG&E Bay Area Monthly Use 2017 - 2020",fill = "Energy Type") +
+  theme(text = element_text(size=8)) +
+  coord_flip() 
+
+
+# adds plotly functionality to the plot 
+pge_chart %>% ggplotly() %>% layout(xaxis = list(fixedrange = T), yaxis = list(fixedrange = T)) %>% 
+  config(displayModeBar = F) 
+
+
+```
+
+The plot shown above illustrates a clear cyclical pattern for Bay Area energy use. Energy use intensity tends to peak in the Winter (December - March), which is in-line with what we would reasonably expect. This peak is primarily driven by residential gas use, shown in purple, which suggests that Bay Area residents use more heating and therefore more natural gas in the Winter when the climate is coldest. There is a slight increase in energy use from Q2-2019 to Q2-2020 which may be attributable to the COVID-19 shelter in place orders. However, it is impossible to say with certainty how much of this increase is because of people spending more time at home and how much of it is attributable to a general increase in energy consumption habits. 
+
+### Part 2 - Percent Change in Bay Area Energy Use 
+
+The following code plots the percent-change in residential elecricity use from Q2-2019 to Q2-2020. 
+
+```{r}
+#add month names to the grouped data frame and change year to integer format 
+month_names <- month.name[pge_bay_grouped$MONTH]
+pge_bay_grouped$MONTH_NAMES <- month_names
+pge_bay_grouped$YEAR <- as.integer(pge_bay_grouped$YEAR)
+pge_bay_grouped$DATE <- as.Date(paste(pge_bay_grouped$MONTH_NAMES, 1, pge_bay_grouped$YEAR), "%B %d %Y")
+pge_bay_grouped$YEAR <- as.factor(pge_bay_grouped$YEAR)
+
+#Ungroups the data 
+pge_bay_grouped <- pge_bay_grouped %>% ungroup()
+
+# goal here is to separate out the relevant data. I am interested in comparing residential electricity use in the bay area for Q2 2019 and Q2 2020. We can first get residential electricity data for 2019 and 2020 with the line below. 
+pge_covid_years <- pge_bay_grouped %>% filter(DATE >= "2019-01-01", CUSTOMERCLASS %in% c("Elec- Residential")) 
+
+# since I am interested in looking at Q2 2019 vs Q2 2020 the line below filters out data that is not from Q2 
+pge_covid_Q2 <- pge_covid_years %>% filter(MONTH_NAMES %in% c("April", "May","June"))
+
+# we want to filter out any NAs 
+pge_covid_Q2 <- pge_covid_Q2[complete.cases(pge_covid_Q2), ] 
+
+pge_covid_Q2$YEAR <- factor(pge_covid_Q2$YEAR)
+
+Q2_data <- split(pge_covid_Q2,pge_covid_Q2$YEAR)
+
+# now we have the energy use data by zip code separated by year 
+Q2_2019 <- Q2_data[[1]] %>% ungroup()
+#Q2_2019  %>% ungroup()
+
+
+Zip_2019 <- Q2_2019 %>% 
+  group_by(ZIPCODE) %>% 
+  summarize(YEARLY_TOTAL = sum(TOTALKBTU, na.rm = T))
+
+#same procedure for 2020 
+Q2_2020 <- Q2_data[[2]] %>% ungroup()
+
+#Q2_2020 <- Q2_2020  %>% ungroup()
+
+Zip_2020 <- Q2_2020 %>% 
+  group_by(ZIPCODE) %>% 
+  summarize(YEARLY_TOTAL = sum(TOTALKBTU, na.rm = T))
+
+#join the data for 2019 and 2018 
+Zip_2019$TOTAL_2020 <- Zip_2020$YEARLY_TOTAL
+
+# create a new column that finds percent change in residential electricity use from 2019 to 2020
+covid_by_zip <- Zip_2019 %>% 
+  rename(
+    TOTAL_2019 = YEARLY_TOTAL)
+
+covid_by_zip$PERC_CHANGE = ((covid_by_zip$TOTAL_2020 - covid_by_zip$TOTAL_2019)/(covid_by_zip$TOTAL_2019))*100
+
+# add geospatial data 
+covid_by_zip <- covid_by_zip  %>% 
+  mutate(ZIPCODE = ZIPCODE %>% as.character()) %>% 
+  group_by(ZIPCODE) %>% right_join(bay_zips %>% select(GEOID10),by = c("ZIPCODE" = "GEOID10")) %>% 
+  st_as_sf() %>% st_transform(4326)
+
+
+# remove any NA's 
+covid_by_zip <- na.omit(covid_by_zip)
+
+#create the color palate using the percent change range 
+min_pal <- min(covid_by_zip$PERC_CHANGE)
+max_pal = max(covid_by_zip$PERC_CHANGE)
+
+res_pal <- colorNumeric(
+  palette = "Reds",
+  domain = 
+    covid_by_zip$PERC_CHANGE
+)
+
+# now we are ready to plot 
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = covid_by_zip,
+    fillColor = ~res_pal(PERC_CHANGE),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(PERC_CHANGE), 
+      " Percent Change in Residential Eletricity Use in ",
+      ZIPCODE
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = covid_by_zip,
+    pal = res_pal,
+    values = ~PERC_CHANGE,
+    title = "Percent Change in<br>Residential Electricity<br> Use Q2 2019 vs Q2 2020"
+  )
+
+Avg_change <- mean(covid_by_zip$PERC_CHANGE)
+
+```
+
+From the plot above we see that in the majority of Bar Area locations saw an increase in electricity use from Q2-2019 to Q2-2020. We find that overall the Bay Area is using roughly 10% more electricity in Q2-2020 compared to Q2-2019. Interestingly, two pretty large zip codes in Sonoma county seemed to have pretty significant reductions (~20%) in electricity use. Moving forward, I would like to further investigate the reasons why these two zipcodes saw such large declines in electricity use. 
