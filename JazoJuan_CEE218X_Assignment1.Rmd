@@ -6,7 +6,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = F, message = F, echo = TRUE)
 ```
 
 ## CEE 218X - Assignment 1 
@@ -19,7 +19,7 @@ The following code uses energy use data from PG&E for 2017-2020. The end result 
 library(tidyverse)
 
 #set our working directory to the file path where the PGE data is stored. 
-setwd("/Users/juanjazo/Documents/GitHub/juanjazo.github.io")
+setwd("/Users/juanjazo/Documents/GitHub/assignment1")
 
 #initialize the variables we will use in the loop that loads in data. We are loading the gas data with the following loop.
 years <- 2017:2020
